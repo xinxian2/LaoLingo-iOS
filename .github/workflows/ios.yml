@@ -1,0 +1,33 @@
+name: Build iOS IPA
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build for iPhone
+        run: |
+          set -euo pipefail
+          xcodebuild -project LaoLingo.xcodeproj -scheme LaoLingo -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned IPA for device signing
+        run: |
+          mkdir -p output/Payload
+          cp -R build/Build/Products/Release-iphoneos/LaoLingo.app output/Payload/
+          cd output
+          zip -qr LaoLingo-iOS-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LaoLingo-iOS-unsigned
+          path: output/LaoLingo-iOS-unsigned.ipa
+          retention-days: 7
+
