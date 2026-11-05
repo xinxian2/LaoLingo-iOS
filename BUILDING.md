@@ -12,3 +12,6 @@ Audio silence threshold is -38 dBFS and may need tuning for noisy environments. 
 
 ## 1.2.1
 Adds Lao sentence IPA and preserves keyword IPA from /study. Deploy the companion backend/app.py as described in backend/DEPLOY.md before regenerating old study records. Only ambiguous numeric audio caches are retired; the selected target language is sent explicitly to /tts. IPA is AI-generated and may be unavailable. Actions validates the backend tests and compiles the Swift app; real voice output and device interaction still require device testing.
+
+## 1.2.2
+Beginner Latin reading and tone arrows appear before optional IPA. Sentence and word hints follow the chosen app language at generation time. Deploy the matching backend and manually regenerate existing study records. Existing cache decoding and Lao audio remain unchanged.

@@ -29,3 +29,29 @@ class StudyPhoneticsTests(unittest.TestCase):
  def test_ipa_does_not_bypass_text_coverage(self):
   r=copy.deepcopy(self.result);r['pairs'][0]['lao']='ສະບາຍດີ'
   with self.assertRaises(s.Problem):self.generate(r)
+
+class EasyReadingTests(unittest.TestCase):
+ def setUp(self):
+  self.pair={'lao':'ດີ','chinese':'好','ipa':'diː','romanization':'dii →','pronunciation_hint':'长元音','words':[{'lao':'ດີ','chinese':'好','ipa':'diː','romanization':'dii →','pronunciation_hint':'长音'}],'note':''}
+ def generate(self, pair=None, enabled=True, language='zh'):
+  with patch.object(s,'config',return_value={'daily':{}}),patch.object(s,'chat',return_value=json.dumps({'pairs':[pair or self.pair]})) as chat:
+   out=s.study_pairs('好','ດີ','zh-lo',True,enabled,language)['pairs'][0]
+   if enabled:
+    prompt=chat.call_args.args[1][0]['content']
+    self.assertIn('不是汉语拼音或官方转写',prompt)
+    self.assertIn('pronunciation_hint使用'+('老挝语' if language=='lo' else '简体中文'),prompt)
+   return out
+ def test_sentence_and_word_reading_preserved(self):
+  p=self.generate();self.assertEqual(p['romanization'],'dii →');self.assertEqual(p['words'][0]['pronunciation_hint'],'长音')
+ def test_lao_hints_requested(self):self.generate(language='lo')
+ def test_existing_clients_do_not_receive_new_fields(self):self.assertNotIn('romanization',self.generate(enabled=False))
+ def test_unknown_reading_stays_empty(self):
+  p=copy.deepcopy(self.pair);p.pop('romanization');p['words'][0]['romanization']=None
+  result=self.generate(p);self.assertEqual(result['romanization'],'');self.assertEqual(result['words'][0]['romanization'],'')
+ def test_invalid_reading_rejected(self):
+  for field,value in [('romanization',[]),('pronunciation_hint',123),('romanization','a'*6001)]:
+   p=copy.deepcopy(self.pair);p[field]=value
+   with self.assertRaises(s.Problem):self.generate(p)
+ def test_invalid_word_reading_rejected(self):
+  p=copy.deepcopy(self.pair);p['words'][0]['romanization']={}
+  with self.assertRaises(s.Problem):self.generate(p)

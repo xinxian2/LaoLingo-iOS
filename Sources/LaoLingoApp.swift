@@ -315,19 +315,22 @@ struct StudyPair: Codable, Identifiable {
     var lao: String
     var chinese: String
     var ipa: String?
+    var romanization: String?
+    var pronunciation_hint: String?
     var words: [StudyWord]
     var note: String
     var structure: String?
     var scenarios: [StudyScenario]?
 }
 struct StudyScenario: Codable { var title: String; var description: String }
-struct StudyWord: Codable { var lao: String; var chinese: String; var ipa: String? }
+struct StudyWord: Codable { var lao: String; var chinese: String; var ipa: String?; var romanization: String?; var pronunciation_hint: String? }
 struct StudyResult: Codable { var pairs: [StudyPair] }
 struct StudyView: View {
     let entry: Entry
     @EnvironmentObject var model: Model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("appLanguage") private var appLanguage = "system"
     @State private var pairs: [StudyPair] = []
     @State private var current = 0
     @State private var slow = false
@@ -346,12 +349,30 @@ struct StudyView: View {
     }
     func generate() {
         model.run {
-            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction,"phonetics":true])
+            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction,"phonetics":true,"easy_reading":true,"explanation_language":resolvedAppLanguage(appLanguage).hasPrefix("lo") ? "lo" : "zh"])
             let data = try JSONSerialization.data(withJSONObject:result)
             let generated = try JSONDecoder().decode(StudyResult.self,from:data).pairs
             guard !generated.isEmpty else { throw URLError(.cannotDecodeContentData) }
             try data.write(to:cache,options:.atomic)
             model.stopSpeech(); current = 0; pairs = generated; quiz = false
+        }
+    }
+    @ViewBuilder
+    func reading(_ value: String?, hint: String?, ipa: String?, showMissing: Bool = true) -> some View {
+        VStack(alignment:.leading,spacing:6) {
+            if let value, !value.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                Text("易读注音").font(.caption).foregroundStyle(.secondary)
+                Text(value).font(.system(size:18,weight:.medium)).foregroundStyle(accent).textSelection(.enabled)
+                Text("→ 平调 · ↗ 升调 · ↘ 降调 · ↑ 高调 · ↓ 低调").font(.caption).foregroundStyle(.secondary)
+            } else if showMissing {
+                Text("暂无易读注音，请重新生成学习内容").font(.caption).foregroundStyle(.secondary)
+            }
+            if let hint, !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(.secondary) }
+            if let ipa, !ipa.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                DisclosureGroup("专业音标 IPA") {
+                    Text(ipaLabel(ipa)).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
+                }.font(.caption)
+            }
         }
     }
     func card<Content: View>(_ tint: Color, @ViewBuilder content: () -> Content) -> some View {
@@ -371,11 +392,7 @@ struct StudyView: View {
                             Text(quiz && !revealed ? "回忆这句话的意思" : pair.chinese).font(.title3.bold())
                             if quiz && !revealed { Button("揭晓译文") { revealed = true } }
                             Text(pair.lao).font(.system(size:29,weight:.semibold)).foregroundStyle(accent).textSelection(.enabled)
-                            if let ipa = pair.ipa, !ipa.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                                Text(ipaLabel(ipa)).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
-                            } else {
-                                Text("暂无整句音标，请重新生成学习内容").font(.caption).foregroundStyle(.secondary)
-                            }
+                            reading(pair.romanization, hint:pair.pronunciation_hint, ipa:pair.ipa)
                             HStack(spacing:12) {
                                 Button { if model.playing || model.loadingAudio { model.stopSpeech() } else { play(pair.lao) } } label: {
                                     Image(systemName:model.playing ? "pause.fill" : "play.fill").font(.title3).frame(width:44,height:44).background(.blue.opacity(0.15),in:Circle())
@@ -395,10 +412,14 @@ struct StudyView: View {
                             Button { model.speak(word.lao,language:"lo",rate:slow ? 0.75 : 1) } label: {
                                 HStack(spacing:12) {
                                     Capsule().fill(i % 2 == 0 ? Color.orange : Color.green).frame(width:4,height:34)
-                                    VStack(alignment:.leading,spacing:3) { Text(word.lao).font(.title3); if let ipa = word.ipa, !ipa.isEmpty { Text(ipaLabel(ipa)).font(.caption).foregroundStyle(.secondary) } }
+                                    VStack(alignment:.leading,spacing:3) {
+                                        Text(word.lao).font(.title3)
+                                        if let value = word.romanization, !value.isEmpty { Text(value).font(.subheadline).foregroundStyle(accent) }
+                                    }
                                     Spacer(); Text(quiz && !revealed ? "•••" : word.chinese).foregroundStyle(.secondary); Image(systemName:"speaker.wave.2").foregroundStyle(accent)
                                 }.padding(.vertical,5).contentShape(Rectangle())
                             }.buttonStyle(.plain)
+                            reading(nil, hint:word.pronunciation_hint, ipa:word.ipa, showMissing:false)
                             Divider()
                         }
                         card(.orange) {
@@ -416,8 +437,8 @@ struct StudyView: View {
                             HStack { Image(systemName:"brain.head.profile").foregroundStyle(.orange); VStack(alignment:.leading) { Text("回忆练习").font(.headline); Text("遮住释义，试着说一遍。").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button(quiz ? "结束" : "开始") { quiz.toggle(); revealed = false } }
                         }
                         if pairs.count > 1 { HStack { Button("上一句") { model.stopSpeech(); current -= 1; revealed = false }.disabled(current == 0); Spacer(); Button("下一句") { model.stopSpeech(); current += 1; revealed = false }.disabled(current == pairs.count-1) } }
-                        Text("AI 发音标注与解释仅供辅助，请结合语音核对。").font(.caption).foregroundStyle(.secondary)
-                        Button("重新生成学习内容和音标",action:generate).disabled(model.busy)
+                        Text("易读注音是辅助读音，不是汉语拼音；请配合慢速朗读核对。").font(.caption).foregroundStyle(.secondary)
+                        Button("重新生成学习内容和注音",action:generate).disabled(model.busy)
                     } else {
                         card(.blue) { Text(entry.translation).font(.title2); Text("从一句话，理解到一个词。"); Button("生成逐句学习",action:generate).disabled(model.busy); if model.busy { ProgressView() } }
                     }

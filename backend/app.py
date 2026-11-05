@@ -193,7 +193,7 @@ def translate_daily(cfg,text,direction):
         if checker(text,result):raise Problem('译文可能包含不符合要求的语种，未保存结果；请重试或补充上下文。',502)
     return result
 
-def study_pairs(source,target,direction,phonetics=False):
+def study_pairs(source,target,direction,phonetics=False,easy_reading=False,explanation_language="zh"):
     if (lao_translation_issue(source,target) if direction=='zh-lo' else unexpected_thai_issue(source,target)):
         raise Problem('这条已保存的译文可能语种有误，请先返回原文重新翻译，再生成学习内容。',422)
     prompt='你是中老双语学习老师。依据给定原文及已有译文，按语义拆成对应的小句，再解释关键词和语法。不得编造原文没有的内容，发现译文错误在note中说明。只输出JSON对象，格式为 {"pairs":[{"lao":"老挝文小句","chinese":"对应中文","words":[{"lao":"关键词","chinese":"词义"}],"note":"简短中文语法或用法说明"}]}。保留老挝文字，不用拼音冒充原文。最多80组，可合并相邻句。每组最多20个关键词。小句拼接必须完整覆盖两种语言各自的文本，不得增删、改写单词；标点和空白可调整。发现错误只写note，不能偷偷改写译文。'
@@ -201,6 +201,14 @@ def study_pairs(source,target,direction,phonetics=False):
         prompt += ('每组增加ipa字段，标注整句老挝语的国际音标IPA；words中每个词也增加ipa字段。'
                    '使用IPA符号及声调标注，不使用汉字谐音或拼音。无法可靠标注时ipa为空字符串，不得猜测。'
                    'ipa为纯字符串，不加斜杠或方括号。不要因音标要求改动lao或chinese文本。')
+    if easy_reading:
+        prompt += ('每组和每个words词条额外增加romanization和pronunciation_hint两个字符串字段。'
+                   'romanization是供初学者使用的拉丁字母辅助读音，不是汉语拼音或官方转写。'
+                   '用普通英文字母组合，按音节用空格分开，长元音用双写，送气用h，鼻音ng；不要使用IPA特殊字母、汉字谐音或汉语拼音声调。'
+                   '每个音节后标声调箭头：→平、↗升、↘降、↑高、↓低；曲折调可组合箭头。不得把老挝语声调强行简化为普通话四声。'
+                   'pronunciation_hint说明该句或词的长短元音、送气、不送气、收尾、声调等实际难点，简短易懂。'
+                   '不能确定的注音或提示留空，不得猜测。音标及辅助注音只描述原有老挝文，不改写原文和译文。')
+        prompt += 'pronunciation_hint使用'+('老挝语' if explanation_language=='lo' else '简体中文')+'。'
     result=structured_json(chat(config()['daily'],[{'role':'system','content':prompt},{'role':'user','content':json.dumps({'source':source,'translation':target,'direction':direction},ensure_ascii=False)}]))
     pairs=result.get('pairs')
     if not isinstance(pairs,list) or not 1<=len(pairs)<=80:raise Problem('学习拆句数量无效，请缩短内容重试',502)
@@ -217,6 +225,17 @@ def study_pairs(source,target,direction,phonetics=False):
             return value.strip().strip('/[]').strip()
         item={'lao':p['lao'],'chinese':p['chinese'],'words':[{'lao':w['lao'],'chinese':w['chinese'],**({'ipa':ipa_value(w)} if phonetics else {})} for w in words],'note':note}
         if phonetics:item['ipa']=ipa_value(p)
+        if easy_reading:
+            def easy_values(value):
+                out={}
+                for key,limit in (('romanization',6000),('pronunciation_hint',2000)):
+                    text=value.get(key,'')
+                    if text is None:text=''
+                    if not isinstance(text,str) or len(text)>limit:raise Problem('辅助注音格式无效',502)
+                    out[key]=text.strip()
+                return out
+            item.update(easy_values(p))
+            for word,original in zip(item['words'],words):word.update(easy_values(original))
         cleaned.append(item)
     def normalized(value):return ''.join(ch for ch in value if ch.isalnum() or '\u0e80'<=ch<='\u0eff')
     lao_reference=source if direction=='lo-zh' else target
@@ -332,7 +351,10 @@ def dispatch(path,data,headers,ip='local',method='POST'):
         if direction not in ('zh-lo','lo-zh') or not all(isinstance(x,str) and 1<=len(x.strip())<=20000 for x in (source,target)):raise Problem('请提供有效原文与译文（各最多20000字）')
         phonetics=data.get('phonetics',False)
         if not isinstance(phonetics,bool):raise Problem('音标选项无效')
-        return study_pairs(source,target,direction,phonetics)
+        easy_reading=data.get('easy_reading',False)
+        language=data.get('explanation_language','zh')
+        if not isinstance(easy_reading,bool) or language not in ('zh','lo'):raise Problem('辅助注音选项无效')
+        return study_pairs(source,target,direction,phonetics,easy_reading,language)
     if path=='/translate':
         mode=data.get('mode','daily');text=data.get('text','');direction=data.get('direction','zh-lo')
         if mode not in ('daily','legal','analysis','dictionary') or direction not in ('zh-lo','lo-zh'): raise Problem('任务或语言无效')
