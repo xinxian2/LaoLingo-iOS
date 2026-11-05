@@ -75,6 +75,16 @@ struct TranslationInput: UIViewRepresentable {
             if text == "\n", textView.markedTextRange == nil { submit(); return false }
             return true
         }
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            var actions: [UIMenuElement] = []
+            if range.length > 0 {
+                actions.append(UIAction(title:appLocalized("复制"),image:UIImage(systemName:"doc.on.doc")) { [weak textView] _ in textView?.copy(nil) })
+                if parent.enabled { actions.append(UIAction(title:appLocalized("剪切"),image:UIImage(systemName:"scissors")) { [weak textView] _ in textView?.cut(nil) }) }
+            }
+            if parent.enabled { actions.append(UIAction(title:appLocalized("粘贴"),image:UIImage(systemName:"doc.on.clipboard")) { [weak textView] _ in textView?.paste(nil) }) }
+            if !textView.text.isEmpty { actions.append(UIAction(title:appLocalized("全选")) { [weak textView] _ in textView?.selectAll(nil) }) }
+            return UIMenu(children:actions)
+        }
         @objc func dismiss() { view?.resignFirstResponder(); parent.focused = false }
         @objc func submit() {
             guard parent.enabled, view?.markedTextRange == nil else { return }
@@ -124,7 +134,7 @@ struct ProfileView: View {
                         } label: { Label("显示模式",systemImage:"circle.lefthalf.filled") }.padding(.vertical,10)
                         Divider()
                         Picker(selection:$language) {
-                            Text("跟随系统").tag("system"); Text("简体中文").tag("zh-Hans"); Text("English").tag("en")
+                            Text("跟随系统").tag("system"); Text("简体中文").tag("zh-Hans"); Text("ພາສາລາວ").tag("lo")
                         } label: { Label("系统语言",systemImage:"globe") }.padding(.vertical,10)
                         Divider()
                         NavigationLink { LicensesView() } label: { HStack { Label("开源协议",systemImage:"doc.text"); Spacer(); Image(systemName:"chevron.right").font(.caption).foregroundStyle(.tertiary) } }.foregroundStyle(.primary).padding(.vertical,17)
@@ -179,9 +189,41 @@ struct LicenseText: View {
     var contents: String { guard let url = Bundle.main.url(forResource:resource,withExtension:"txt"), let text = try? String(contentsOf:url,encoding:.utf8) else { return "License resource unavailable." }; return text }
 }
 
+func resolvedAppLanguage(_ choice: String? = nil) -> String {
+    let selected = choice ?? UserDefaults.standard.string(forKey:"appLanguage") ?? "system"
+    if selected == "lo" || selected == "zh-Hans" { return selected }
+    for identifier in Locale.preferredLanguages {
+        if identifier.hasPrefix("lo") { return "lo" }
+        if identifier.hasPrefix("zh") { return "zh-Hans" }
+    }
+    return "zh-Hans"
+}
 func appLocalized(_ key: String) -> String {
-    let choice = UserDefaults.standard.string(forKey:"appLanguage") ?? "system"
-    let identifier = choice == "system" ? (Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "zh-Hans" : "en") : choice
+    let identifier = resolvedAppLanguage()
     let bundle = Bundle.main.path(forResource:identifier,ofType:"lproj").flatMap { Bundle(path:$0) } ?? .main
     return bundle.localizedString(forKey:key,value:key,table:nil)
+}
+func appError(_ error: Error) -> String {
+    let ns = error as NSError
+    if ns.domain == NSURLErrorDomain {
+        switch ns.code {
+        case NSURLErrorNotConnectedToInternet: return appLocalized("未连接网络，请开启移动数据或 Wi-Fi 后重试")
+        case NSURLErrorNetworkConnectionLost: return appLocalized("网络连接已中断，请重试")
+        case NSURLErrorTimedOut: return appLocalized("请求超时，请稍后重试")
+        case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed: return appLocalized("无法连接服务器，请检查网络后重试")
+        case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate: return appLocalized("安全连接失败，请稍后重试")
+        case NSURLErrorCancelled: return appLocalized("操作已取消")
+        default: return appLocalized("请求失败，请检查网络后重试")
+        }
+    }
+    if ns.domain == "LaoLingo" {
+        if ns.code == 401 { return appLocalized("账号或密码错误，或登录已失效，请重新登录") }
+        if ns.code == 429 { return appLocalized("请求过于频繁或今日额度已用完，请稍后重试") }
+        if ns.code >= 500 { return appLocalized("服务暂时不可用，请稍后重试") }
+        return appLocalized("请求未完成，请检查输入内容后重试")
+    }
+    let message = ns.localizedDescription
+    let translated = appLocalized(message)
+    if translated != message || resolvedAppLanguage() == "zh-Hans" && message.range(of:"[\u{4E00}-\u{9FFF}]",options:.regularExpression) != nil { return translated }
+    return appLocalized("操作失败，请重试")
 }

@@ -12,14 +12,13 @@ targets:
   LaoLingo:
     type: application
     platform: iOS
-    sources: [Sources]
-    resources: [Resources]
+    sources: [Sources, Resources]
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: LaoLingo
-        CFBundleDevelopmentRegion: en
-        CFBundleLocalizations: [en, zh-Hans]
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations: [zh-Hans, lo]
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: 录制语音以识别中文或老挝语
         UIApplicationSupportsIndirectInputEvents: true

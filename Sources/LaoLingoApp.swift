@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Security
+import UIKit
 
 struct Entry: Codable, Identifiable {
     var id = UUID()
@@ -33,15 +34,23 @@ enum Vault {
     @Published var entries: [Entry] = []
     @Published var busy = false
     @Published var error = ""
+    @Published var notice = ""
+    private var noticeTask: Task<Void,Never>?
     private var player: AVAudioPlayer?
     private let folder = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
     init() {
         if let data = try? Data(contentsOf:folder.appendingPathComponent("records.json")),
            let saved = try? JSONDecoder().decode([Entry].self,from:data) { entries = saved }
     }
+    func copy(_ text: String) {
+        UIPasteboard.general.string = text
+        notice = appLocalized("已复制")
+        noticeTask?.cancel()
+        noticeTask = Task { try? await Task.sleep(for:.seconds(1.8)); if !Task.isCancelled { notice = "" } }
+    }
     func persist() {
         do { try JSONEncoder().encode(entries).write(to:folder.appendingPathComponent("records.json"),options:.atomic) }
-        catch { self.error = "保存记录失败：" + error.localizedDescription }
+        catch { self.error = appLocalized("保存记录失败，请重试") }
     }
     func call(_ path: String, _ body: [String:Any]) async throws -> [String:Any] {
         var request = URLRequest(url:URL(string:"https://fy.atku.cn" + path)!)
@@ -61,7 +70,7 @@ enum Vault {
     }
     func run(_ work: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }; busy = true
-        Task { defer { busy = false }; do { try await work() } catch { self.error = error.localizedDescription } }
+        Task { defer { busy = false }; do { try await work() } catch { self.error = appError(error) } }
     }
     func save(source: String, translation: String, direction: String) {
         entries.insert(Entry(source:source,translation:translation,direction:direction),at:0); persist()
@@ -190,9 +199,10 @@ struct Home: View {
                         if !output.isEmpty {
                             VStack(alignment:.leading,spacing:20) {
                                 Text("译文").font(.caption).foregroundStyle(.secondary)
-                                Text(output).font(.title3).textSelection(.enabled)
+                                Text(output).font(.title3).contextMenu { Button("复制",systemImage:"doc.on.doc") { model.copy(output) } }
                                 HStack(spacing:24) {
                                     Button { model.speak(output) } label: { Image(systemName:"speaker.wave.2") }
+                                    Button("复制",systemImage:"doc.on.doc") { model.copy(output) }
                                     ShareLink(item:output) { Image(systemName:"square.and.arrow.up") }
                                     Button("逐句学习",systemImage:"book") { study = Entry(source:text,translation:output,direction:direction) }
                                 }.disabled(model.busy)
@@ -211,12 +221,12 @@ struct Home: View {
                 List {
                     if model.entries.isEmpty { ContentUnavailableView("还没有记录",systemImage:"clock",description:Text("翻译完成后会自动保存在本机")) }
                     ForEach(model.entries) { entry in
-                        Button { study = entry } label: {
-                            VStack(alignment:.leading,spacing:8) {
-                                HStack { Text(entry.source).lineLimit(2); if entry.mastered { Image(systemName:"checkmark.seal.fill").foregroundStyle(.green) } }
-                                Text(entry.translation).foregroundStyle(.secondary).lineLimit(3)
-                            }.padding(.vertical,8)
-                        }.foregroundStyle(.primary)
+                        VStack(alignment:.leading,spacing:8) {
+                            HStack { Text(entry.source).lineLimit(2); if entry.mastered { Image(systemName:"checkmark.seal.fill").foregroundStyle(.green) } }
+                            Text(entry.translation).foregroundStyle(.secondary).lineLimit(3)
+                        }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,8)
+                        .contentShape(Rectangle()).onTapGesture { study = entry }
+                        .foregroundStyle(.primary)
                         .swipeActions(edge:.trailing,allowsFullSwipe:false) {
                             Button("删除",role:.destructive) { model.entries.removeAll { $0.id == entry.id }; model.persist() }
                             Button(entry.mastered ? LocalizedStringKey("标为未掌握") : LocalizedStringKey("标为已掌握")) {
@@ -230,8 +240,9 @@ struct Home: View {
                 .tabItem { Label("我的",systemImage:"person.crop.circle") }
         }
         .tint(theme.accent(dark:colorScheme == .dark))
-        .environment(\.locale,appLanguage == "system" ? Locale.current : Locale(identifier:appLanguage))
+        .environment(\.locale,Locale(identifier:resolvedAppLanguage(appLanguage)))
         .preferredColorScheme(appearance == 0 ? nil : appearance == 1 ? .light : .dark)
+        .overlay(alignment:.bottom) { if !model.notice.isEmpty { Text(model.notice).font(.subheadline).padding(.horizontal,22).padding(.vertical,12).background(.regularMaterial,in:Capsule()).padding(.bottom,80).allowsHitTesting(false) } }
         .alert("提示",isPresented:Binding(get:{!model.error.isEmpty},set:{if !$0 { model.error = "" }})) { Button("好") { model.error = "" } } message: { Text(model.error) }
         .sheet(isPresented:$login) { NavigationStack { Form {
             TextField("用户名",text:$user).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -271,7 +282,7 @@ struct Home: View {
             let result = try await model.call("/stt",["audio":data.base64EncodedString(),"format":"m4a","language":language])
             text = result["text"] as? String ?? ""
         } }
-        Task { do { try await recorder.start() } catch { model.error = error.localizedDescription } }
+        Task { do { try await recorder.start() } catch { model.error = appError(error) } }
     }
 }
 struct StudyPair: Codable, Identifiable {
@@ -293,8 +304,8 @@ struct StudyView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("原文") { Text(entry.source).textSelection(.enabled) }
-                Section("译文") { Text(entry.translation).textSelection(.enabled); Button("朗读译文",systemImage:"speaker.wave.2") { model.speak(entry.translation) }.disabled(model.busy) }
+                Section("原文") { Text(entry.source).contextMenu { Button("复制") { model.copy(entry.source) } } }
+                Section("译文") { Text(entry.translation).contextMenu { Button("复制") { model.copy(entry.translation) } }; Button("朗读译文",systemImage:"speaker.wave.2") { model.speak(entry.translation) }.disabled(model.busy) }
                 ForEach(pairs) { pair in Section {
                     Button { model.speak(pair.lao) } label: { Label(pair.lao,systemImage:"speaker.wave.2") }.disabled(model.busy)
                     Text(pair.chinese)
