@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Test backend language and phonetics contracts
+        run: python3 -m unittest discover -s backend/tests -v
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
@@ -30,4 +32,5 @@ jobs:
           name: LaoLingo-iOS-unsigned
           path: output/LaoLingo-iOS-unsigned.ipa
           retention-days: 7
+
 

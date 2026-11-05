@@ -89,7 +89,9 @@ enum Vault {
             defer { if generation == playbackGeneration { loadingAudio = false } }
             do {
                 let indexURL = folder.appendingPathComponent("audio-index.json")
-                let key = "tts-v2:" + language + ":" + text
+                // Only retire ambiguous numeric audio; preserve other offline recordings.
+                let numericOnly = text.rangeOfCharacter(from: .decimalDigits) != nil && text.rangeOfCharacter(from: .letters) == nil
+                let key = (numericOnly ? "tts-v3:" : "tts-v2:") + language + ":" + text
                 var index = ((try? Data(contentsOf:indexURL)).flatMap { try? JSONDecoder().decode([String:String].self,from:$0) }) ?? [:]
                 let filename = index[key] ?? UUID().uuidString + ".mp3"
                 let url = folder.appendingPathComponent(filename)
@@ -115,7 +117,7 @@ enum Vault {
                         if !self.playing { self.playbackTimer?.invalidate() }
                     }
                 }
-            } catch { if generation == playbackGeneration { self.error = error.localizedDescription } }
+            } catch { if generation == playbackGeneration { self.error = appError(error) } }
         }
     }
 
@@ -312,6 +314,7 @@ struct StudyPair: Codable, Identifiable {
     var id: String { lao + chinese }
     var lao: String
     var chinese: String
+    var ipa: String?
     var words: [StudyWord]
     var note: String
     var structure: String?
@@ -336,9 +339,14 @@ struct StudyView: View {
     var mastered: Bool { model.entries.first(where:{$0.id == entry.id})?.mastered ?? entry.mastered }
     var accent: Color { .blue }
     func play(_ text: String) { model.speak(text,language:"lo",rate:slow ? 0.75 : 1,loop:looping) }
+    func ipaLabel(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in:.whitespacesAndNewlines)
+            .trimmingCharacters(in:CharacterSet(charactersIn:"/[]"))
+        return "/" + trimmed + "/"
+    }
     func generate() {
         model.run {
-            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction])
+            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction,"phonetics":true])
             let data = try JSONSerialization.data(withJSONObject:result)
             let generated = try JSONDecoder().decode(StudyResult.self,from:data).pairs
             guard !generated.isEmpty else { throw URLError(.cannotDecodeContentData) }
@@ -363,6 +371,11 @@ struct StudyView: View {
                             Text(quiz && !revealed ? "回忆这句话的意思" : pair.chinese).font(.title3.bold())
                             if quiz && !revealed { Button("揭晓译文") { revealed = true } }
                             Text(pair.lao).font(.system(size:29,weight:.semibold)).foregroundStyle(accent).textSelection(.enabled)
+                            if let ipa = pair.ipa, !ipa.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                                Text(ipaLabel(ipa)).font(.subheadline).foregroundStyle(.secondary).textSelection(.enabled)
+                            } else {
+                                Text("暂无整句音标，请重新生成学习内容").font(.caption).foregroundStyle(.secondary)
+                            }
                             HStack(spacing:12) {
                                 Button { if model.playing || model.loadingAudio { model.stopSpeech() } else { play(pair.lao) } } label: {
                                     Image(systemName:model.playing ? "pause.fill" : "play.fill").font(.title3).frame(width:44,height:44).background(.blue.opacity(0.15),in:Circle())
@@ -382,7 +395,7 @@ struct StudyView: View {
                             Button { model.speak(word.lao,language:"lo",rate:slow ? 0.75 : 1) } label: {
                                 HStack(spacing:12) {
                                     Capsule().fill(i % 2 == 0 ? Color.orange : Color.green).frame(width:4,height:34)
-                                    VStack(alignment:.leading,spacing:3) { Text(word.lao).font(.title3); if let ipa = word.ipa, !ipa.isEmpty { Text("/"+ipa+"/").font(.caption).foregroundStyle(.secondary) } }
+                                    VStack(alignment:.leading,spacing:3) { Text(word.lao).font(.title3); if let ipa = word.ipa, !ipa.isEmpty { Text(ipaLabel(ipa)).font(.caption).foregroundStyle(.secondary) } }
                                     Spacer(); Text(quiz && !revealed ? "•••" : word.chinese).foregroundStyle(.secondary); Image(systemName:"speaker.wave.2").foregroundStyle(accent)
                                 }.padding(.vertical,5).contentShape(Rectangle())
                             }.buttonStyle(.plain)
@@ -429,3 +442,4 @@ struct StudyView: View {
         }
     }
 }
+

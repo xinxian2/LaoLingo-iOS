@@ -8,3 +8,7 @@ Never commit P12 files, passwords, provisioning profiles, backend provider keys,
 Build status and device behavior must be checked before calling this release installable. No device test has been performed.
 Audio silence threshold is -38 dBFS and may need tuning for noisy environments. Audio is cached after playback; study text is cached after generation. Initial study generation does not prefetch all word audio.
 
+
+
+## 1.2.1
+Adds Lao sentence IPA and preserves keyword IPA from /study. Deploy the companion backend/app.py as described in backend/DEPLOY.md before regenerating old study records. Only ambiguous numeric audio caches are retired; the selected target language is sent explicitly to /tts. IPA is AI-generated and may be unavailable. Actions validates the backend tests and compiles the Swift app; real voice output and device interaction still require device testing.
