@@ -1,0 +1,6 @@
+build/
+output/
+*.p12
+*.mobileprovision
+*.ipa
+LaoLingo.xcodeproj/
