@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 import AVFoundation
 import Security
 
@@ -146,12 +145,16 @@ struct Home: View {
     @State private var text = ""
     @State private var output = ""
     @State private var reverse = false
-    @State private var photo: PhotosPickerItem?
+    @State private var inputFocused = false
     @State private var login = false
     @State private var user = ""
     @State private var password = ""
     @State private var study: Entry?
     @AppStorage("appearance") private var appearance = 0
+    @AppStorage("theme") private var themeID = 0
+    @AppStorage("appLanguage") private var appLanguage = "system"
+    @Environment(\.colorScheme) private var colorScheme
+    var theme: AppTheme { AppTheme.all[min(max(themeID,0),5)] }
     var direction: String { reverse ? "lo-zh" : "zh-lo" }
     var body: some View {
         TabView {
@@ -161,23 +164,23 @@ struct Home: View {
                         Text("让语言，自然流动").font(.title2.bold())
                         Text("中文与老挝语，随时沟通").foregroundStyle(.secondary)
                         HStack {
-                            Text(reverse ? "老挝语" : "中文")
+                            Text(reverse ? LocalizedStringKey("老挝语") : LocalizedStringKey("中文"))
                             Spacer()
                             Button { reverse.toggle(); let previous = text; text = output; output = previous } label: { Image(systemName:"arrow.left.arrow.right") }
                             Spacer()
-                            Text(reverse ? "中文" : "老挝语")
+                            Text(reverse ? LocalizedStringKey("中文") : LocalizedStringKey("老挝语"))
                         }.font(.headline).padding().modifier(Glass())
                         VStack(alignment:.leading,spacing:16) {
-                            TextEditor(text:$text).frame(minHeight:160).scrollContentBackground(.hidden)
-                                .overlay(alignment:.topLeading) { if text.isEmpty { Text("输入想翻译的内容…").foregroundStyle(.tertiary).padding(.top,8).allowsHitTesting(false) } }
+                            TranslationInput(text:$text, focused:$inputFocused, enabled:!model.busy && !recorder.active, accent:theme.accent(dark:colorScheme == .dark), onSubmit:translate).frame(height:170)
+                                .overlay(alignment:.topLeading) { if text.isEmpty { Text("输入想翻译的内容…").foregroundStyle(.tertiary).padding(.top,8).padding(.leading,5).allowsHitTesting(false) } }
                             Divider()
                             HStack(spacing:20) {
-                                Button { startRecording() } label: { Label(recorder.active ? "录音中" : "语音",systemImage:recorder.active ? "waveform" : "mic") }.disabled(model.busy || recorder.active)
+                                Button { startRecording() } label: { Label(recorder.active ? LocalizedStringKey("录音中") : LocalizedStringKey("语音"),systemImage:recorder.active ? "waveform" : "mic") }.disabled(model.busy || recorder.active)
                                 if recorder.active {
                                     Button("停止") { recorder.finish(cancel:false) }
                                     Button("取消",role:.cancel) { recorder.finish(cancel:true) }
                                 } else {
-                                    PhotosPicker(selection:$photo,matching:.images) { Image(systemName:"photo") }.disabled(model.busy)
+                                    Label("图片翻译暂未开放",systemImage:"lock.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel(Text("图片翻译已锁定"))
                                     Spacer()
                                     Button("翻译",systemImage:"arrow.up") { translate() }
                                         .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.busy)
@@ -199,6 +202,7 @@ struct Home: View {
                         if recorder.active { Text("说完后静音 1.5 秒自动结束，也可点停止").font(.caption).foregroundStyle(.secondary) }
                     }.padding(22)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .background(background)
                 .navigationTitle("LaoLingo")
                 .toolbar { ToolbarItem(placement:.topBarTrailing) { Button { login = true } label: { Image(systemName:model.token.isEmpty ? "person.crop.circle" : "person.crop.circle.fill") } } }
@@ -215,22 +219,18 @@ struct Home: View {
                         }.foregroundStyle(.primary)
                         .swipeActions(edge:.trailing,allowsFullSwipe:false) {
                             Button("删除",role:.destructive) { model.entries.removeAll { $0.id == entry.id }; model.persist() }
-                            Button(entry.mastered ? "标为未掌握" : "标为已掌握") {
+                            Button(entry.mastered ? LocalizedStringKey("标为未掌握") : LocalizedStringKey("标为已掌握")) {
                                 if let i = model.entries.firstIndex(where:{$0.id == entry.id}) { model.entries[i].mastered.toggle(); model.persist() }
                             }.tint(.teal)
                         }
                     }
-                }.navigationTitle("学习记录")
+                }.scrollContentBackground(.hidden).background(background).navigationTitle("学习记录")
             }.tabItem { Label("学习",systemImage:"book.closed") }
-            NavigationStack {
-                Form {
-                    Section("外观") { Picker("显示模式",selection:$appearance) { Text("跟随系统").tag(0); Text("浅色").tag(1); Text("深色").tag(2) } }
-                    Section("账号") { Button(model.token.isEmpty ? "登录" : "切换账号") { login = true }; if !model.token.isEmpty { Button("退出登录",role:.destructive) { model.token = ""; Vault.save("") } } }
-                    Section("关于") { LabeledContent("版本",value:"iOS 1.0.0"); Text("翻译记录和已播放的音频保存在本机；翻译及首次生成语音需要联网。").font(.footnote).foregroundStyle(.secondary) }
-                }.navigationTitle("设置")
-            }.tabItem { Label("设置",systemImage:"slider.horizontal.3") }
+            ProfileView(login:$login).environmentObject(model)
+                .tabItem { Label("我的",systemImage:"person.crop.circle") }
         }
-        .tint(.teal)
+        .tint(theme.accent(dark:colorScheme == .dark))
+        .environment(\.locale,appLanguage == "system" ? Locale.current : Locale(identifier:appLanguage))
         .preferredColorScheme(appearance == 0 ? nil : appearance == 1 ? .light : .dark)
         .alert("提示",isPresented:Binding(get:{!model.error.isEmpty},set:{if !$0 { model.error = "" }})) { Button("好") { model.error = "" } } message: { Text(model.error) }
         .sheet(isPresented:$login) { NavigationStack { Form {
@@ -240,35 +240,21 @@ struct Home: View {
                 model.run {
                     let result = try await model.call("/login",["name":user,"password":password])
                     guard let token = result["token"] as? String, !token.isEmpty else { throw URLError(.cannotParseResponse) }
-                    model.token = token; Vault.save(token); password = ""; login = false
+                    model.token = token; Vault.save(token); UserDefaults.standard.set(user,forKey:"accountName"); password = ""; login = false
                 }
             }.disabled(user.isEmpty || password.isEmpty || model.busy)
             if model.busy { ProgressView() }
         }.navigationTitle("登录 LaoLingo").toolbar { Button("完成") { login = false } } }.presentationDetents([.medium,.large]) }
         .sheet(item:$study) { StudyView(entry:$0).environmentObject(model) }
-        .onChange(of:photo) { _, item in
-            guard let item else { return }; guard requireLogin() else { photo = nil; return }
-            let d = direction
-            model.run {
-                defer { photo = nil }
-                guard let bytes = try await item.loadTransferable(type:Data.self), let image = UIImage(data:bytes) else { throw URLError(.cannotDecodeContentData) }
-                let maxSide: CGFloat = 1600
-                let ratio = min(1,maxSide / max(image.size.width,image.size.height))
-                let size = CGSize(width:image.size.width * ratio,height:image.size.height * ratio)
-                let resized = UIGraphicsImageRenderer(size:size).image { _ in image.draw(in:CGRect(origin:.zero,size:size)) }
-                guard let data = resized.jpegData(compressionQuality:0.8) else { throw URLError(.cannotDecodeContentData) }
-                let result = try await model.call("/image",["image":"data:image/jpeg;base64," + data.base64EncodedString(),"direction":d])
-                text = result["source_text"] as? String ?? ""; output = result["translation"] as? String ?? ""
-                if !output.isEmpty { model.save(source:text,translation:output,direction:d) }
-            }
-        }
         .onDisappear { recorder.finish(cancel:true) }
     }
     var background: some View {
-        LinearGradient(colors:[Color.teal.opacity(0.15),Color.blue.opacity(0.06),Color.orange.opacity(0.09)],startPoint:.topLeading,endPoint:.bottomTrailing).ignoresSafeArea()
+        theme.background(dark:colorScheme == .dark).ignoresSafeArea()
     }
     func requireLogin() -> Bool { if model.token.isEmpty { login = true; return false }; return true }
     func translate() {
+        inputFocused = false
+        guard !model.busy, !recorder.active, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return }
         guard requireLogin() else { return }
         let source = text; let d = direction
         model.run {
@@ -278,6 +264,7 @@ struct Home: View {
         }
     }
     func startRecording() {
+        inputFocused = false
         guard requireLogin() else { return }
         let language = reverse ? "lo" : "zh"
         recorder.onFinish = { data in model.run {
