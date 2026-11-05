@@ -37,6 +37,11 @@ enum Vault {
     @Published var notice = ""
     private var noticeTask: Task<Void,Never>?
     private var player: AVAudioPlayer?
+    @Published var playing = false
+    @Published var loadingAudio = false
+    private var playbackGeneration = 0
+    private var playbackTimer: Timer?
+    func stopSpeech() { playbackGeneration += 1; player?.stop(); playing = false; loadingAudio = false; playbackTimer?.invalidate() }
     private let folder = FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0]
     init() {
         if let data = try? Data(contentsOf:folder.appendingPathComponent("records.json")),
@@ -75,27 +80,45 @@ enum Vault {
     func save(source: String, translation: String, direction: String) {
         entries.insert(Entry(source:source,translation:translation,direction:direction),at:0); persist()
     }
-    func speak(_ text: String) {
+    func speak(_ text: String, language: String = "auto", rate: Float = 1, loop: Bool = false) {
         guard !text.isEmpty else { return }
-        // Stable filename without storing private text in the path.
-        importAudio(text)
-    }
-    private func importAudio(_ text: String) {
-        run {
-            let indexURL = self.folder.appendingPathComponent("audio-index.json")
-            var index = ((try? Data(contentsOf:indexURL)).flatMap { try? JSONDecoder().decode([String:String].self,from:$0) }) ?? [:]
-            let filename = index[text] ?? UUID().uuidString + ".mp3"
-            let url = self.folder.appendingPathComponent(filename)
-            if !FileManager.default.fileExists(atPath:url.path) {
-                let result = try await self.call("/tts",["text":text])
-                guard let encoded = result["audio"] as? String, let bytes = Data(base64Encoded:encoded) else { throw URLError(.cannotDecodeContentData) }
-                try bytes.write(to:url,options:.atomic); index[text] = filename
-                try JSONEncoder().encode(index).write(to:indexURL,options:.atomic)
-            }
-            try AVAudioSession.sharedInstance().setCategory(.playback,mode:.default)
-            self.player = try AVAudioPlayer(contentsOf:url); self.player?.play()
+        stopSpeech()
+        let generation = playbackGeneration
+        loadingAudio = true
+        Task {
+            defer { if generation == playbackGeneration { loadingAudio = false } }
+            do {
+                let indexURL = folder.appendingPathComponent("audio-index.json")
+                let key = "tts-v2:" + language + ":" + text
+                var index = ((try? Data(contentsOf:indexURL)).flatMap { try? JSONDecoder().decode([String:String].self,from:$0) }) ?? [:]
+                let filename = index[key] ?? UUID().uuidString + ".mp3"
+                let url = folder.appendingPathComponent(filename)
+                if !FileManager.default.fileExists(atPath:url.path) {
+                    let result = try await call("/tts",["text":text,"language":language])
+                    guard let encoded = result["audio"] as? String, let bytes = Data(base64Encoded:encoded), bytes.count > 64 else { throw URLError(.cannotDecodeContentData) }
+                    _ = try AVAudioPlayer(data:bytes)
+                    try bytes.write(to:url,options:.atomic)
+                    // Reload to retain cache entries written by concurrent downloads.
+                    index = ((try? Data(contentsOf:indexURL)).flatMap { try? JSONDecoder().decode([String:String].self,from:$0) }) ?? [:]
+                    index[key] = filename
+                    try JSONEncoder().encode(index).write(to:indexURL,options:.atomic)
+                }
+                guard generation == playbackGeneration else { return }
+                try AVAudioSession.sharedInstance().setCategory(.playback,mode:.default)
+                player = try AVAudioPlayer(contentsOf:url)
+                player?.enableRate = true; player?.rate = rate; player?.numberOfLoops = loop ? -1 : 0
+                playing = player?.play() ?? false
+                playbackTimer = Timer.scheduledTimer(withTimeInterval:0.1,repeats:true) { _ in
+                    Task { @MainActor in
+                        guard generation == self.playbackGeneration else { return }
+                        self.playing = self.player?.isPlaying ?? false
+                        if !self.playing { self.playbackTimer?.invalidate() }
+                    }
+                }
+            } catch { if generation == playbackGeneration { self.error = error.localizedDescription } }
         }
     }
+
 }
 @MainActor final class Recorder: ObservableObject {
     @Published var active = false
@@ -201,7 +224,7 @@ struct Home: View {
                                 Text("译文").font(.caption).foregroundStyle(.secondary)
                                 Text(output).font(.title3).contextMenu { Button("复制",systemImage:"doc.on.doc") { model.copy(output) } }
                                 HStack(spacing:24) {
-                                    Button { model.speak(output) } label: { Image(systemName:"speaker.wave.2") }
+                                    Button { model.speak(output,language:reverse ? "zh" : "lo") } label: { Image(systemName:"speaker.wave.2") }
                                     Button("复制",systemImage:"doc.on.doc") { model.copy(output) }
                                     ShareLink(item:output) { Image(systemName:"square.and.arrow.up") }
                                     Button("逐句学习",systemImage:"book") { study = Entry(source:text,translation:output,direction:direction) }
@@ -291,41 +314,118 @@ struct StudyPair: Codable, Identifiable {
     var chinese: String
     var words: [StudyWord]
     var note: String
+    var structure: String?
+    var scenarios: [StudyScenario]?
 }
-struct StudyWord: Codable { var lao: String; var chinese: String }
+struct StudyScenario: Codable { var title: String; var description: String }
+struct StudyWord: Codable { var lao: String; var chinese: String; var ipa: String? }
 struct StudyResult: Codable { var pairs: [StudyPair] }
 struct StudyView: View {
     let entry: Entry
     @EnvironmentObject var model: Model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
     @State private var pairs: [StudyPair] = []
-    @State private var loading = false
+    @State private var current = 0
+    @State private var slow = false
+    @State private var looping = false
+    @State private var quiz = false
+    @State private var revealed = false
+    @State private var bookmarked = false
     var cache: URL { FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0].appendingPathComponent(entry.id.uuidString + ".study.json") }
+    var mastered: Bool { model.entries.first(where:{$0.id == entry.id})?.mastered ?? entry.mastered }
+    var accent: Color { .blue }
+    func play(_ text: String) { model.speak(text,language:"lo",rate:slow ? 0.75 : 1,loop:looping) }
+    func generate() {
+        model.run {
+            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction])
+            let data = try JSONSerialization.data(withJSONObject:result)
+            let generated = try JSONDecoder().decode(StudyResult.self,from:data).pairs
+            guard !generated.isEmpty else { throw URLError(.cannotDecodeContentData) }
+            try data.write(to:cache,options:.atomic)
+            model.stopSpeech(); current = 0; pairs = generated; quiz = false
+        }
+    }
+    func card<Content: View>(_ tint: Color, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment:.leading,spacing:14,content:content).padding(18).frame(maxWidth:.infinity,alignment:.leading)
+            .background(tint.opacity(scheme == .dark ? 0.19 : 0.09),in:RoundedRectangle(cornerRadius:24))
+            .overlay(RoundedRectangle(cornerRadius:24).stroke(tint.opacity(0.15)))
+    }
     var body: some View {
         NavigationStack {
-            List {
-                Section("原文") { Text(entry.source).contextMenu { Button("复制") { model.copy(entry.source) } } }
-                Section("译文") { Text(entry.translation).contextMenu { Button("复制") { model.copy(entry.translation) } }; Button("朗读译文",systemImage:"speaker.wave.2") { model.speak(entry.translation) }.disabled(model.busy) }
-                ForEach(pairs) { pair in Section {
-                    Button { model.speak(pair.lao) } label: { Label(pair.lao,systemImage:"speaker.wave.2") }.disabled(model.busy)
-                    Text(pair.chinese)
-                    ForEach(pair.words.indices,id:\.self) { i in Button { model.speak(pair.words[i].lao) } label: { Text(pair.words[i].lao + " · " + pair.words[i].chinese) }.disabled(model.busy) }
-                    if !pair.note.isEmpty { Text(pair.note).font(.footnote).foregroundStyle(.secondary) }
-                } }
-                if pairs.isEmpty {
-                    Button("生成逐句学习") {
-                        model.run {
-                            let result = try await model.call("/study",["source":entry.source,"translation":entry.translation,"direction":entry.direction])
-                            let data = try JSONSerialization.data(withJSONObject:result)
-                            pairs = try JSONDecoder().decode(StudyResult.self,from:data).pairs
-                            try data.write(to:cache,options:.atomic)
+            ScrollView {
+                VStack(alignment:.leading,spacing:20) {
+                    if !pairs.isEmpty {
+                        let pair = pairs[min(current,pairs.count-1)]
+                        HStack { Spacer(); Text("日常表达 · \(current+1) / \(pairs.count)").font(.subheadline).foregroundStyle(.secondary); Spacer() }
+                        card(.blue) {
+                            Text("逐句理解").font(.caption.weight(.semibold)).foregroundStyle(accent)
+                            Text(quiz && !revealed ? "回忆这句话的意思" : pair.chinese).font(.title3.bold())
+                            if quiz && !revealed { Button("揭晓译文") { revealed = true } }
+                            Text(pair.lao).font(.system(size:29,weight:.semibold)).foregroundStyle(accent).textSelection(.enabled)
+                            HStack(spacing:12) {
+                                Button { if model.playing || model.loadingAudio { model.stopSpeech() } else { play(pair.lao) } } label: {
+                                    Image(systemName:model.playing ? "pause.fill" : "play.fill").font(.title3).frame(width:44,height:44).background(.blue.opacity(0.15),in:Circle())
+                                }.accessibilityLabel(model.playing ? "暂停朗读" : "朗读老挝语")
+                                if model.loadingAudio { ProgressView() }
+                                TimelineView(.animation(minimumInterval:0.12,paused:!model.playing)) { timeline in
+                                    HStack(spacing:3) { ForEach(0..<18,id:\.self) { i in Capsule().fill(accent.opacity(0.65)).frame(width:3,height:model.playing ? 7 + abs(sin(timeline.date.timeIntervalSinceReferenceDate*5+Double(i)))*18 : 6) } }.frame(height:30)
+                                }.accessibilityHidden(true)
+                                Spacer(minLength:0)
+                                Button(slow ? "慢速" : "正常") { slow.toggle(); if model.playing { play(pair.lao) } }.font(.caption.bold())
+                                Button { looping.toggle(); if model.playing { play(pair.lao) } } label: { Image(systemName:"repeat").foregroundStyle(looping ? accent : .secondary) }.accessibilityLabel(looping ? "关闭循环" : "循环朗读")
+                            }
                         }
-                    }.disabled(model.busy)
+                        Text("词语拆解 · 点击听发音").font(.headline)
+                        ForEach(pair.words.indices,id:\.self) { i in
+                            let word = pair.words[i]
+                            Button { model.speak(word.lao,language:"lo",rate:slow ? 0.75 : 1) } label: {
+                                HStack(spacing:12) {
+                                    Capsule().fill(i % 2 == 0 ? Color.orange : Color.green).frame(width:4,height:34)
+                                    VStack(alignment:.leading,spacing:3) { Text(word.lao).font(.title3); if let ipa = word.ipa, !ipa.isEmpty { Text("/"+ipa+"/").font(.caption).foregroundStyle(.secondary) } }
+                                    Spacer(); Text(quiz && !revealed ? "•••" : word.chinese).foregroundStyle(.secondary); Image(systemName:"speaker.wave.2").foregroundStyle(accent)
+                                }.padding(.vertical,5).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Divider()
+                        }
+                        card(.orange) {
+                            Text("句式理解").font(.headline)
+                            if !quiz || revealed {
+                                if let structure = pair.structure, !structure.isEmpty { Text(structure) }
+                                Text(pair.note).font(.subheadline).foregroundStyle(.secondary)
+                            } else { Text("先回忆，再揭晓句式和用法").foregroundStyle(.secondary) }
+                        }
+                        if let scenarios = pair.scenarios, !scenarios.isEmpty, !quiz || revealed {
+                            Text("使用场景").font(.headline)
+                            ForEach(scenarios.indices,id:\.self) { i in card(i % 2 == 0 ? .blue : .green) { Label(scenarios[i].title,systemImage:"bubble.left.and.bubble.right").font(.headline); Text(scenarios[i].description).font(.subheadline).foregroundStyle(.secondary) } }
+                        }
+                        card(.blue) {
+                            HStack { Image(systemName:"brain.head.profile").foregroundStyle(.orange); VStack(alignment:.leading) { Text("回忆练习").font(.headline); Text("遮住释义，试着说一遍。").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button(quiz ? "结束" : "开始") { quiz.toggle(); revealed = false } }
+                        }
+                        if pairs.count > 1 { HStack { Button("上一句") { model.stopSpeech(); current -= 1; revealed = false }.disabled(current == 0); Spacer(); Button("下一句") { model.stopSpeech(); current += 1; revealed = false }.disabled(current == pairs.count-1) } }
+                        Text("AI 发音标注与解释仅供辅助，请结合语音核对。").font(.caption).foregroundStyle(.secondary)
+                        Button("重新生成学习内容和音标",action:generate).disabled(model.busy)
+                    } else {
+                        card(.blue) { Text(entry.translation).font(.title2); Text("从一句话，理解到一个词。"); Button("生成逐句学习",action:generate).disabled(model.busy); if model.busy { ProgressView() } }
+                    }
+                }.padding(20)
+            }.background(Color(uiColor:scheme == .dark ? .systemBackground : .secondarySystemBackground))
+                .navigationTitle("逐句学习").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement:.topBarLeading) { Button { dismiss() } label: { Image(systemName:"chevron.left") } }
+                    ToolbarItem(placement:.topBarTrailing) { Button { bookmarked.toggle(); UserDefaults.standard.set(bookmarked,forKey:"study-bookmark-"+entry.id.uuidString) } label: { Image(systemName:bookmarked ? "bookmark.fill" : "bookmark") }.accessibilityLabel("收藏本条学习记录") }
                 }
-                if model.busy { ProgressView() }
-            }.navigationTitle("逐句学习").toolbar { Button("完成") { dismiss() } }
-                .onAppear { if let data = try? Data(contentsOf:cache), let result = try? JSONDecoder().decode(StudyResult.self,from:data) { pairs = result.pairs } }
+                .safeAreaInset(edge:.bottom) {
+                    HStack(spacing:12) {
+                        Button { if !pairs.isEmpty { play(pairs[current].lao) } } label: { Label("再听一遍",systemImage:"arrow.clockwise").frame(maxWidth:.infinity) }.buttonStyle(.bordered)
+                        Button {
+                            if let i = model.entries.firstIndex(where:{$0.id == entry.id}) { model.entries[i].mastered.toggle(); model.persist() }
+                            else { var saved = entry; saved.mastered = true; model.entries.insert(saved,at:0); model.persist() }
+                        } label: { Label(mastered ? "标为未掌握" : "标为已掌握",systemImage:"checkmark").frame(maxWidth:.infinity) }.buttonStyle(.borderedProminent)
+                    }.padding().background(.ultraThinMaterial).disabled(pairs.isEmpty)
+                }
+                .onAppear { bookmarked = UserDefaults.standard.bool(forKey:"study-bookmark-"+entry.id.uuidString); if let data = try? Data(contentsOf:cache), let result = try? JSONDecoder().decode(StudyResult.self,from:data) { pairs = result.pairs } }
+                .onDisappear { model.stopSpeech() }
         }
     }
 }
-
