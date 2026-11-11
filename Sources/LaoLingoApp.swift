@@ -184,8 +184,16 @@ struct Home: View {
     @State private var user = ""
     @State private var password = ""
     @State private var study: Entry?
+    @State private var recordsSearch = ""
+    @State private var deletedEntry: Entry?
+    @State private var undoTask: Task<Void, Never>?
+    @AppStorage("didCompleteWelcome") private var didCompleteWelcome = false
+    @State private var showWelcome = false
+    @State private var showLaunch = true
+    @State private var showMicSettings = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("appearance") private var appearance = 0
-    @AppStorage("theme") private var themeID = 0
+    @AppStorage("theme") private var themeID = 1
     @AppStorage("appLanguage") private var appLanguage = "system"
     @Environment(\.colorScheme) private var colorScheme
     var theme: AppTheme { AppTheme.all[min(max(themeID,0),5)] }
@@ -194,81 +202,81 @@ struct Home: View {
         TabView {
             NavigationStack {
                 ScrollView {
-                    VStack(alignment:.leading,spacing:22) {
-                        Text("让语言，自然流动").font(.title2.bold())
-                        Text("中文与老挝语，随时沟通").foregroundStyle(.secondary)
+                    VStack(alignment:.leading,spacing:14) {
                         HStack {
                             Text(reverse ? LocalizedStringKey("老挝语") : LocalizedStringKey("中文"))
                             Spacer()
                             Button { reverse.toggle(); let previous = text; text = output; output = previous } label: { Image(systemName:"arrow.left.arrow.right") }
                             Spacer()
                             Text(reverse ? LocalizedStringKey("中文") : LocalizedStringKey("老挝语"))
-                        }.font(.headline).padding().modifier(Glass())
-                        VStack(alignment:.leading,spacing:16) {
-                            TranslationInput(text:$text, focused:$inputFocused, enabled:!model.busy && !recorder.active, accent:theme.accent(dark:colorScheme == .dark), onSubmit:translate).frame(height:170)
+                        }.font(.subheadline.weight(.semibold)).padding(12).modifier(Glass())
+                        VStack(alignment:.leading,spacing:10) {
+                            TranslationInput(text:$text, focused:$inputFocused, enabled:!model.busy && !recorder.active, accent:theme.accent(dark:colorScheme == .dark), onSubmit:translate).frame(height:120)
                                 .overlay(alignment:.topLeading) { if text.isEmpty { Text("输入想翻译的内容…").foregroundStyle(.tertiary).padding(.top,8).padding(.leading,5).allowsHitTesting(false) } }
                             Divider()
-                            HStack(spacing:20) {
+                            HStack(spacing:10) {
                                 Button { startRecording() } label: { Label(recorder.active ? LocalizedStringKey("录音中") : LocalizedStringKey("语音"),systemImage:recorder.active ? "waveform" : "mic") }.disabled(model.busy || recorder.active)
                                 if recorder.active {
-                                    Button("停止") { recorder.finish(cancel:false) }
+                                    Button("停止",systemImage:"stop.fill") { recorder.finish(cancel:false) }
                                     Button("取消",role:.cancel) { recorder.finish(cancel:true) }
                                 } else {
-                                    Label("图片翻译暂未开放",systemImage:"lock.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel(Text("图片翻译已锁定"))
+                                    Image(systemName:"lock").foregroundStyle(.secondary).accessibilityLabel(Text("图片翻译已锁定"))
                                     Spacer()
                                     Button("翻译",systemImage:"arrow.up") { translate() }
                                         .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.busy)
                                 }
                             }
-                        }.padding(20).background(.background.opacity(0.8),in:RoundedRectangle(cornerRadius:28))
+                        }.padding(14).modifier(PreviewPanel())
                         if !output.isEmpty {
-                            VStack(alignment:.leading,spacing:20) {
+                            VStack(alignment:.leading,spacing:12) {
                                 Text("译文").font(.caption).foregroundStyle(.secondary)
                                 Text(output).font(.title3).contextMenu { Button("复制",systemImage:"doc.on.doc") { model.copy(output) } }
-                                HStack(spacing:24) {
+                                HStack(spacing:14) {
                                     Button { model.speak(output,language:reverse ? "zh" : "lo") } label: { Image(systemName:"speaker.wave.2") }
-                                    Button("复制",systemImage:"doc.on.doc") { model.copy(output) }
+                                    Button { model.copy(output) } label: { Image(systemName:"doc.on.doc") }.accessibilityLabel(Text("复制"))
                                     ShareLink(item:output) { Image(systemName:"square.and.arrow.up") }
-                                    Button("逐句学习",systemImage:"book") { study = Entry(source:text,translation:output,direction:direction) }
+                                    Button("逐句学习",systemImage:"book") { study = model.entries.first { $0.source == text && $0.translation == output && $0.direction == direction } ?? Entry(source:text,translation:output,direction:direction) }
                                 }.disabled(model.busy)
-                            }.frame(maxWidth:.infinity,alignment:.leading).padding(24).background(.background.opacity(0.8),in:RoundedRectangle(cornerRadius:28))
+                            }.frame(maxWidth:.infinity,alignment:.leading).padding(14).modifier(PreviewPanel())
                         }
                         if model.busy { ProgressView("正在处理…").frame(maxWidth:.infinity) }
                         if recorder.active { Text("说完后静音 1.5 秒自动结束，也可点停止").font(.caption).foregroundStyle(.secondary) }
-                    }.padding(22)
+                        recentStudy
+                    }.padding(16)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .background(background)
-                .navigationTitle("LaoLingo")
+                .navigationTitle("LaoLingo").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement:.topBarTrailing) { Button { login = true } label: { Image(systemName:model.token.isEmpty ? "person.crop.circle" : "person.crop.circle.fill") } } }
             }.tabItem { Label("翻译",systemImage:"character.bubble") }
-            NavigationStack {
-                List {
-                    if model.entries.isEmpty { ContentUnavailableView("还没有记录",systemImage:"clock",description:Text("翻译完成后会自动保存在本机")) }
-                    ForEach(model.entries) { entry in
-                        VStack(alignment:.leading,spacing:8) {
-                            HStack { Text(entry.source).lineLimit(2); if entry.mastered { Image(systemName:"checkmark.seal.fill").foregroundStyle(.green) } }
-                            Text(entry.translation).foregroundStyle(.secondary).lineLimit(3)
-                        }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,8)
-                        .contentShape(Rectangle()).onTapGesture { study = entry }
-                        .foregroundStyle(.primary)
-                        .swipeActions(edge:.trailing,allowsFullSwipe:false) {
-                            Button("删除",role:.destructive) { model.entries.removeAll { $0.id == entry.id }; model.persist() }
-                            Button(entry.mastered ? LocalizedStringKey("标为未掌握") : LocalizedStringKey("标为已掌握")) {
-                                if let i = model.entries.firstIndex(where:{$0.id == entry.id}) { model.entries[i].mastered.toggle(); model.persist() }
-                            }.tint(.teal)
-                        }
-                    }
-                }.scrollContentBackground(.hidden).background(background).navigationTitle("学习记录")
-            }.tabItem { Label("学习",systemImage:"book.closed") }
             ProfileView(login:$login).environmentObject(model)
                 .tabItem { Label("我的",systemImage:"person.crop.circle") }
         }
         .tint(theme.accent(dark:colorScheme == .dark))
         .environment(\.locale,Locale(identifier:resolvedAppLanguage(appLanguage)))
         .preferredColorScheme(appearance == 0 ? nil : appearance == 1 ? .light : .dark)
+        .overlay(alignment:.bottom) {
+            if let entry = deletedEntry {
+                HStack {
+                    Text("已删除一条记录")
+                    Button("撤销") {
+                        undoTask?.cancel()
+                        model.entries.append(entry)
+                        model.entries.sort { $0.date > $1.date }
+                        model.persist()
+                        deletedEntry = nil
+                    }.fontWeight(.semibold)
+                }.font(.subheadline).padding(12).background(.regularMaterial,in:Capsule()).padding(.bottom,62)
+            }
+        }
         .overlay(alignment:.bottom) { if !model.notice.isEmpty { Text(model.notice).font(.subheadline).padding(.horizontal,22).padding(.vertical,12).background(.regularMaterial,in:Capsule()).padding(.bottom,80).allowsHitTesting(false) } }
         .alert("提示",isPresented:Binding(get:{!model.error.isEmpty},set:{if !$0 { model.error = "" }})) { Button("好") { model.error = "" } } message: { Text(model.error) }
+        .confirmationDialog("麦克风权限已关闭",isPresented:$showMicSettings,titleVisibility:.visible) {
+            Button("前往系统设置") {
+                if let url = URL(string:UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            Button("取消",role:.cancel) {}
+        }
         .sheet(isPresented:$login) { NavigationStack { Form {
             TextField("用户名",text:$user).textInputAutocapitalization(.never).autocorrectionDisabled()
             SecureField("密码",text:$password)
@@ -282,7 +290,92 @@ struct Home: View {
             if model.busy { ProgressView() }
         }.navigationTitle("登录 LaoLingo").toolbar { Button("完成") { login = false } } }.presentationDetents([.medium,.large]) }
         .sheet(item:$study) { StudyView(entry:$0).environmentObject(model) }
+        .fullScreenCover(isPresented:$showWelcome) {
+            PreviewWelcome {
+                didCompleteWelcome = true
+                showWelcome = false
+            }
+        }
+        .overlay {
+            if showLaunch {
+                ZStack {
+                    background
+                    PreviewBrand()
+                }.accessibilityHidden(true).transition(.opacity)
+            }
+        }
+        .task {
+            guard showLaunch else { return }
+            if !reduceMotion { try? await Task.sleep(for:.milliseconds(420)) }
+            withAnimation(reduceMotion ? nil : .easeOut(duration:0.22)) { showLaunch = false }
+            if !didCompleteWelcome { showWelcome = true }
+        }
         .onDisappear { recorder.finish(cancel:true) }
+    }
+    private var recentStudy: some View {
+        VStack(alignment:.leading,spacing:8) {
+            HStack {
+                Label("最近学习",systemImage:"book.closed").font(.headline)
+                Spacer()
+                NavigationLink { records } label: { Label("全部记录",systemImage:"chevron.right").font(.footnote) }
+            }
+            if model.entries.isEmpty {
+                Text("翻译完成后会自动保存在本机").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(model.entries.prefix(3))) { entry in
+                    Button { study = entry } label: { recordLabel(entry) }.buttonStyle(.plain)
+                    if entry.id != model.entries.prefix(3).last?.id { Divider() }
+                }
+            }
+        }.padding(14).modifier(PreviewPanel())
+    }
+    private var filteredRecords: [Entry] {
+        let query = recordsSearch.trimmingCharacters(in:.whitespacesAndNewlines)
+        return model.entries.filter {
+            query.isEmpty || $0.source.localizedCaseInsensitiveContains(query) || $0.translation.localizedCaseInsensitiveContains(query)
+        }
+    }
+    private var records: some View {
+        List {
+            if filteredRecords.isEmpty {
+                ContentUnavailableView("还没有记录",systemImage:"clock")
+            }
+            ForEach(filteredRecords) { entry in
+                Button { study = entry } label: { recordLabel(entry) }.buttonStyle(.plain)
+                    .swipeActions(edge:.trailing,allowsFullSwipe:false) {
+                        Button("删除",systemImage:"trash",role:.destructive) { delete(entry) }
+                        Button(entry.mastered ? LocalizedStringKey("标为未掌握") : LocalizedStringKey("标为已掌握")) {
+                            if let index = model.entries.firstIndex(where: { $0.id == entry.id }) {
+                                model.entries[index].mastered.toggle()
+                                model.persist()
+                            }
+                        }.tint(.teal)
+                    }
+            }
+        }.scrollContentBackground(.hidden).background(background)
+            .searchable(text:$recordsSearch,prompt:Text("搜索原文或译文"))
+            .navigationTitle("学习记录")
+    }
+    private func recordLabel(_ entry: Entry) -> some View {
+        HStack {
+            VStack(alignment:.leading,spacing:4) {
+                Text(entry.source).font(.subheadline).lineLimit(2)
+                Text(entry.translation).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            if entry.mastered { Image(systemName:"checkmark.seal.fill").foregroundStyle(.green) }
+            Image(systemName:"chevron.right").font(.caption).foregroundStyle(.tertiary)
+        }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,4).contentShape(Rectangle())
+    }
+    private func delete(_ entry: Entry) {
+        model.entries.removeAll { $0.id == entry.id }
+        model.persist()
+        deletedEntry = entry
+        undoTask?.cancel()
+        undoTask = Task { @MainActor in
+            try? await Task.sleep(for:.seconds(5))
+            if !Task.isCancelled { deletedEntry = nil }
+        }
     }
     var background: some View {
         theme.background(dark:colorScheme == .dark).ignoresSafeArea()
@@ -301,6 +394,7 @@ struct Home: View {
     }
     func startRecording() {
         inputFocused = false
+        if AVAudioApplication.shared.recordPermission == .denied { showMicSettings = true; return }
         guard requireLogin() else { return }
         let language = reverse ? "lo" : "zh"
         recorder.onFinish = { data in model.run {
@@ -376,9 +470,9 @@ struct StudyView: View {
         }
     }
     func card<Content: View>(_ tint: Color, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment:.leading,spacing:14,content:content).padding(18).frame(maxWidth:.infinity,alignment:.leading)
-            .background(tint.opacity(scheme == .dark ? 0.19 : 0.09),in:RoundedRectangle(cornerRadius:24))
-            .overlay(RoundedRectangle(cornerRadius:24).stroke(tint.opacity(0.15)))
+        VStack(alignment:.leading,spacing:14,content:content).padding(14).frame(maxWidth:.infinity,alignment:.leading)
+            .background(tint.opacity(scheme == .dark ? 0.19 : 0.09),in:RoundedRectangle(cornerRadius:18))
+            .overlay(RoundedRectangle(cornerRadius:18).stroke(tint.opacity(0.15)))
     }
     var body: some View {
         NavigationStack {

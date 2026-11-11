@@ -9,12 +9,12 @@ struct AppTheme: Identifiable {
     var wash: UInt32
     var night: UInt32
     static let all = [
-        AppTheme(id:0,name:"薄荷青柠",light:0x213b16,dark:0xc5ee72,wash:0xe5f8ae,night:0x101b16),
-        AppTheme(id:1,name:"海盐蓝",light:0x075c70,dark:0x89dce7,wash:0xc8f5f5,night:0x101d26),
-        AppTheme(id:2,name:"蜜桃暖橙",light:0xa64a17,dark:0xffba91,wash:0xffdfc8,night:0x251914),
-        AppTheme(id:3,name:"夜间青绿",light:0x0a6667,dark:0xb6f378,wash:0xc9f3e9,night:0x101d20),
-        AppTheme(id:4,name:"鼠尾草",light:0x36553d,dark:0xb5d3ad,wash:0xe1efd7,night:0x171f1a),
-        AppTheme(id:5,name:"深海暖沙",light:0x284b61,dark:0xb7d5ea,wash:0xffead0,night:0x151d26)
+        AppTheme(id:0,name:"薄荷青柠",light:0x236747,dark:0x91d7b2,wash:0xe5f1eb,night:0x192d25),
+        AppTheme(id:1,name:"雾蓝",light:0x245b9e,dark:0xa6cafd,wash:0xe9f0f9,night:0x202b38),
+        AppTheme(id:2,name:"蜜桃暖橙",light:0x8c4b21,dark:0xf2ba92,wash:0xf4eadb,night:0x32241d),
+        AppTheme(id:3,name:"夜间青绿",light:0x116b71,dark:0x85d3d8,wash:0xe2f0f1,night:0x192c32),
+        AppTheme(id:4,name:"鼠尾草",light:0x567043,dark:0xb6d09f,wash:0xecf0e5,night:0x252d22),
+        AppTheme(id:5,name:"玫瑰砂",light:0x8b4957,dark:0xf1b1be,wash:0xf5ebed,night:0x35272d)
     ]
     func accent(dark mode: Bool) -> Color { Color(hex:mode ? dark : light) }
     func background(dark mode: Bool) -> LinearGradient {
@@ -98,7 +98,7 @@ struct ProfileView: View {
     @EnvironmentObject var model: Model
     @Binding var login: Bool
     @AppStorage("accountName") private var accountName = ""
-    @AppStorage("theme") private var themeID = 0
+    @AppStorage("theme") private var themeID = 1
     @AppStorage("appearance") private var appearance = 0
     @AppStorage("appLanguage") private var language = "system"
     @Environment(\.colorScheme) private var scheme
@@ -106,11 +106,10 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment:.leading,spacing:26) {
+                VStack(alignment:.leading,spacing:14) {
                     accountCard
                     VStack(alignment:.leading,spacing:16) {
                         Label("主题选择",systemImage:"paintpalette").font(.headline)
-                        Text("熟悉的六种配色，适配通透的 iOS 界面").font(.caption).foregroundStyle(.secondary)
                         LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],spacing:12) {
                             ForEach(AppTheme.all) { option in
                                 Button { withAnimation(.easeInOut(duration:0.25)) { themeID = option.id } } label: {
@@ -127,7 +126,7 @@ struct ProfileView: View {
                                 }.buttonStyle(.plain).accessibilityAddTraits(themeID == option.id ? .isSelected : [])
                             }
                         }
-                    }.padding(20).background(.regularMaterial,in:RoundedRectangle(cornerRadius:26))
+                    }.padding(14).modifier(PreviewPanel())
                     VStack(spacing:0) {
                         Picker(selection:$appearance) {
                             Text("跟随系统").tag(0); Text("浅色").tag(1); Text("深色").tag(2)
@@ -139,7 +138,7 @@ struct ProfileView: View {
                         Divider()
                         NavigationLink { LicensesView() } label: { HStack { Label("开源协议",systemImage:"doc.text"); Spacer(); Image(systemName:"chevron.right").font(.caption).foregroundStyle(.tertiary) } }.foregroundStyle(.primary).padding(.vertical,17)
                     }.padding(.horizontal,20).background(.regularMaterial,in:RoundedRectangle(cornerRadius:26))
-                    Text("LaoLingo · 1.1.0").font(.caption).foregroundStyle(.secondary).frame(maxWidth:.infinity)
+                    Text("LaoLingo · " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")).font(.caption).foregroundStyle(.secondary).frame(maxWidth:.infinity)
                     Text("翻译记录和已播放的音频保存在本机；翻译及首次生成语音需要联网。").font(.caption).foregroundStyle(.secondary)
                 }.padding(20)
             }.background(theme.background(dark:scheme == .dark).ignoresSafeArea()).navigationTitle("我的")
@@ -161,7 +160,7 @@ struct ProfileView: View {
                 Button(model.token.isEmpty ? LocalizedStringKey("登录") : LocalizedStringKey("切换账号")) { login = true }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
                 if !model.token.isEmpty { Spacer(); Button("退出登录",role:.destructive) { model.token = ""; Vault.save(""); accountName = "" }.buttonStyle(.borderless) }
             }
-        }.padding(23).modifier(Glass())
+        }.padding(15).modifier(PreviewPanel())
     }
 }
 
@@ -227,3 +226,4 @@ func appError(_ error: Error) -> String {
     if translated != message || resolvedAppLanguage() == "zh-Hans" && message.range(of:"[\u{4E00}-\u{9FFF}]",options:.regularExpression) != nil { return translated }
     return appLocalized("操作失败，请重试")
 }
+
